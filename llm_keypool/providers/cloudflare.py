@@ -151,7 +151,17 @@ async def complete(
         return CompletionResult(text="", tokens_used=0, was_429=False, error="Request to Cloudflare timed out")
     except httpx.NetworkError as e:
         return CompletionResult(text="", tokens_used=0, was_429=False, error=f"Network error: {str(e)[:100]}")
-    # Broad catch to always return structured CompletionResult, not crash
+    except httpx.HTTPStatusError as e:
+        return CompletionResult(
+            text="", tokens_used=0, was_429=False,
+            error=f"HTTP {e.response.status_code}",
+        )
+    except httpx.TimeoutException:
+        return CompletionResult(text="", tokens_used=0, was_429=False, error="Request to Cloudflare timed out")
+    except httpx.NetworkError as e:
+        return CompletionResult(text="", tokens_used=0, was_429=False, error=f"Network error: {str(e)[:100]}")
+    except httpx.RequestError as e:
+        return CompletionResult(text="", tokens_used=0, was_429=False, error=f"Request error: {str(e)[:100]}")
     except Exception as e:  # noqa: BLE001
         return CompletionResult(
             text="", tokens_used=0, was_429=False,

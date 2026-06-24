@@ -7,10 +7,41 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 import httpx
-from openai import APIStatusError, AsyncOpenAI, RateLimitError
+from openai import APIStatusError, APIConnectionError, AsyncOpenAI, RateLimitError
 
 from .base import CompletionResult
 from .headers import collect_rl_headers, extract_remaining_requests
+
+_NO_AUTH_SENTINEL = "sentinel-no-op"
+
+
+class _NoAuth(httpx.Auth):
+    """httpx Auth handler that strips the Authorization header.
+
+    Used for providers like opencode_zen that reject invalid auth headers
+    but allow unauthenticated requests.
+    """
+
+    def auth_flow(self, request: httpx.Request) -> httpx.Request:
+        request.headers.pop("authorization", None)
+        yield request
+
+
+def _make_client(base_url: str, api_key: str, no_auth: bool = False) -> AsyncOpenAI:
+    """Create an AsyncOpenAI client.
+
+    When *api_key* is empty/the no-auth sentinel, or *no_auth* is ``True``,
+    creates a client with no ``Authorization`` header (for providers like
+    opencode_zen that reject invalid auth but allow public access).
+    """
+    if no_auth or not api_key or api_key == "empty-key-placeholder":
+        http_client = httpx.AsyncClient(auth=_NoAuth())
+        return AsyncOpenAI(
+            base_url=base_url,
+            api_key=_NO_AUTH_SENTINEL,
+            http_client=http_client,
+        )
+    return AsyncOpenAI(base_url=base_url, api_key=api_key)
 
 _THINK_CLOSED_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
 _THINK_OPEN_RE = re.compile(r"<think>.*$", re.DOTALL)
@@ -91,6 +122,7 @@ def _make_stream_gen(
     api_key: str,
     base_url: str,
     strip_thinking: bool,
+    no_auth: bool = False,
     **kwargs: Any,  # noqa: ANN401
 ) -> AsyncGenerator[dict[str, Any], None]:
     """Return an async generator that yields OpenAI-format streaming chunks."""
@@ -98,7 +130,7 @@ def _make_stream_gen(
     created = int(time.time())
 
     async def _gen() -> AsyncGenerator[dict[str, Any], None]:
-        client = AsyncOpenAI(base_url=base_url, api_key=api_key)
+        client = _make_client(base_url=base_url, api_key=api_key, no_auth=no_auth)
         try:
             raw_stream = await client.chat.completions.with_raw_response.create(
                 model=model,
@@ -116,10 +148,26 @@ def _make_stream_gen(
                     delta = choice.delta
                     delta_out: dict[str, Any] = {}
                     if delta is not None:
-                        if delta.content is not None:
-                            delta_out["content"] = delta.content
                         if delta.role is not None:
                             delta_out["role"] = delta.role
+
+                        has_real_content = delta.content is not None
+                        if has_real_content:
+                            delta_out["content"] = delta.content
+
+                        # reasoning_content — Z.ai/OpenCode Zen/Cloudflare
+                        # reasoning         — Ollama
+                        rc = getattr(delta, "reasoning_content", None)
+                        if rc is not None:
+                            delta_out["reasoning_content"] = rc
+                        r = getattr(delta, "reasoning", None)
+                        if r is not None:
+                            delta_out["reasoning"] = r
+
+                        # FreeLLMAPI's normalizeChoices only folds reasoning into content
+                        # on the non-streaming path. For streaming, we forward
+                        # reasoning_content as its own field and NEVER touch
+                        # content — the client accumulates it correctly.
                     finish = str(choice.finish_reason) if choice.finish_reason else None
                     choices_list = [
                         {
@@ -163,6 +211,21 @@ def _make_stream_gen(
                 chunk_id, created, model,
                 error=f"Network error connecting to {_mask_key(base_url)}: {str(e)[:100]}",
             )
+        except httpx.HTTPStatusError as e:
+            yield _build_error_chunk(
+                chunk_id, created, model,
+                error=f"HTTP {e.status_code} from provider {provider}: {str(e)[:160]}",
+            )
+        except httpx.RequestError as e:
+            yield _build_error_chunk(
+                chunk_id, created, model,
+                error=f"Request error: {str(e)[:100]}",
+            )
+        except APIConnectionError as e:
+            yield _build_error_chunk(
+                chunk_id, created, model,
+                error=f"Connection error to {_mask_key(base_url)}: {str(e)[:150]}",
+            )
         except Exception as e:  # noqa: BLE001
             yield _build_error_chunk(
                 chunk_id, created, model,
@@ -194,12 +257,13 @@ async def complete(
             api_key=key_data["api_key"] or "empty-key-placeholder",
             base_url=key_data["base_url"],
             strip_thinking=strip_thinking,
+            no_auth=key_data.get("no_auth", False),
             **kwargs,
         )
 
     provider = key_data.get("provider", "")
     api_key = key_data["api_key"] or "empty-key-placeholder"
-    client = AsyncOpenAI(base_url=key_data["base_url"], api_key=api_key)
+    client = _make_client(base_url=key_data["base_url"], api_key=api_key, no_auth=key_data.get("no_auth", False))
     try:
         raw = await client.chat.completions.with_raw_response.create(
             model=model,
@@ -209,7 +273,13 @@ async def complete(
         resp = raw.parse()
         rl_headers = collect_rl_headers(raw.headers)
         remaining = extract_remaining_requests(provider, rl_headers)
-        text = resp.choices[0].message.content or ""
+        msg = resp.choices[0].message
+        text = msg.content or ""
+        reasoning_content: str | None = None
+        if hasattr(msg, "reasoning_content") and msg.reasoning_content:
+            reasoning_content = msg.reasoning_content
+        if not text and reasoning_content:
+            text = reasoning_content
         if strip_thinking:
             text = _strip_thinking(text)
         return CompletionResult(
@@ -218,6 +288,7 @@ async def complete(
             was_429=False,
             remaining_requests=remaining,
             rate_limit_headers=rl_headers,
+            reasoning_content=reasoning_content,
         )
     except RateLimitError as e:
         rl_headers = {}
@@ -241,6 +312,21 @@ async def complete(
         return CompletionResult(
             text="", tokens_used=0, was_429=False,
             error=f"Network error connecting to {_mask_key(key_data.get('base_url',''))}: {str(e)[:100]}",
+        )
+    except httpx.HTTPStatusError as e:
+        return CompletionResult(
+            text="", tokens_used=0, was_429=False,
+            error=f"HTTP {e.status_code} from provider {key_data.get('provider','?')}: {str(e)[:160]}",
+        )
+    except httpx.RequestError as e:
+        return CompletionResult(
+            text="", tokens_used=0, was_429=False,
+            error=f"Request error: {str(e)[:100]}",
+        )
+    except APIConnectionError as e:
+        return CompletionResult(
+            text="", tokens_used=0, was_429=False,
+            error=f"Connection error to {_mask_key(key_data.get('base_url',''))}: {str(e)[:150]}",
         )
     # Broad catch to always return structured CompletionResult, not crash
     except Exception as e:  # noqa: BLE001

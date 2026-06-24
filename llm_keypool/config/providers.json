@@ -516,9 +516,10 @@
       ]
     },
     "opencode_zen": {
-      "base_url": "https://zen.opencode.com/v1",
+      "base_url": "https://opencode.ai/zen/v1",
       "openai_compatible": true,
       "free_tier": true,
+      "no_auth": true,
       "limits": {
         "rpm": 20,
         "tpm": 200000
@@ -530,11 +531,17 @@
       "cooldown_fallback": {
         "strategy": "rolling_60"
       },
-      "default_model": "gpt-4o-mini",
+      "default_model": "deepseek-v4-flash-free",
       "models": [
-        "gpt-4o-mini",
-        "gpt-4o",
-        "claude-3-haiku"
+        "deepseek-v4-flash-free",
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
+        "claude-haiku-4-5",
+        "claude-sonnet-4",
+        "claude-opus-4-5",
+        "gemini-3.5-flash",
+        "gpt-5.4-mini",
+        "gpt-5.4-nano"
       ],
       "capabilities": [
         "general_purpose"
@@ -983,6 +990,60 @@
         "llama3-70b",
         "mixtral-8x7b",
         "qwen2-72b"
+      ]
+    },
+    "freellmapi": {
+      "base_url": "http://127.0.0.1:3001/v1",
+      "openai_compatible": true,
+      "free_tier": true,
+      "limits": {
+        "rpm": 60,
+        "tpm": 100000,
+        "rpd": 100000
+      },
+      "default_model": "qwen/qwen3-coder:free",
+      "models": [
+        "auto",
+        "qwen/qwen3-coder:free",
+        "qwen/qwen3-235b-a22b:free",
+        "deepseek-v4-flash-free",
+        "deepseek-chat-free",
+        "openai/gpt-4o-mini",
+        "llama-3.3-70b-versatile"
+      ],
+      "capabilities": [
+        "general_purpose",
+        "fast",
+        "agentic"
+      ],
+      "key_prefix": "freellmapi-"
+    },
+    "paxsenix": {
+      "base_url": "https://api.paxsenix.org/v1",
+      "openai_compatible": true,
+      "free_tier": true,
+      "limits": {
+        "rpm": 30,
+        "tpm": 50000
+      },
+      "quota_reset": {
+        "rpm_tpm": "rolling"
+      },
+      "quota_api": "none",
+      "cooldown_fallback": {
+        "strategy": "rolling_60"
+      },
+      "default_model": "claude-sonnet-4-6",
+      "models": [
+        "claude-sonnet-4-6",
+        "claude-opus-4",
+        "gpt-4o",
+        "gpt-4o-mini",
+        "llama-3.3-70b"
+      ],
+      "capabilities": [
+        "general_purpose",
+        "agentic"
       ]
     }
   }

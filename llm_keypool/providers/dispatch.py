@@ -57,36 +57,34 @@ async def complete(
     stream: bool = False,
     **kwargs: Any,  # noqa: ANN401
 ) -> tuple[CompletionResult, dict[str, Any] | None] | tuple[AsyncGenerator[dict[str, Any], None], dict[str, Any] | None]:
-    """Select best key, call provider, auto-rotate on 429.
-
-    When *stream* is ``False`` (default):
-        Returns ``(CompletionResult, key_data_used)`` — key_data is ``None``
-        when all keys are exhausted.
-
-    When *stream* is ``True``:
-        Returns ``(async_generator, key_data)``.  The generator yields dicts in
-        OpenAI streaming chunk format.  A single attempt is made — no retries
-        on 429 (streaming connections cannot be easily retried).  On 429 an
-        error chunk is yielded and the generator ends.
-    """
     messages = messages or []
+    min_context = kwargs.pop("min_context", None)
+    require_tools = kwargs.pop("require_tools", None)
+    require_vision = kwargs.pop("require_vision", None)
 
     if stream:
-        return await _stream_complete(rotator, capabilities, messages, subscriber_id, **kwargs)
+        return await _stream_complete(rotator, capabilities, messages, subscriber_id, min_context, require_tools, require_vision, **kwargs)
 
-    # Type guard: we are in the non-streaming branch
     assert not stream
     for attempt in range(MAX_RETRY_ATTEMPTS):
-        key_data = rotator.get_best_key(capabilities, subscriber_id=subscriber_id)
+        key_data = rotator.get_best_key(
+            capabilities, subscriber_id=subscriber_id,
+            min_context=min_context, require_tools=require_tools, require_vision=require_vision,
+        )
         if not key_data:
             return CompletionResult(text="", tokens_used=0, was_429=False, error="all_keys_exhausted"), None
 
         t0 = time.monotonic()
-        result = await _call_complete(key_data, messages, **kwargs)
+        try:
+            result = await _call_complete(key_data, messages, **kwargs)
+        except Exception as exc:
+            result = CompletionResult(
+                text="", tokens_used=0, was_429=False,
+                error=f"Unexpected error: {type(exc).__name__}: {str(exc)[:150]}",
+            )
         latency_ms = int((time.monotonic() - t0) * 1000)
 
         if not isinstance(result, CompletionResult):
-            # Streaming branch returned a generator, which shouldn't happen in non-streaming mode
             return CompletionResult(text="", tokens_used=0, was_429=False, error="unexpected_stream_result"), None
 
         if result.was_429:
@@ -100,7 +98,20 @@ async def complete(
             await asyncio.sleep(min(0.5 * (2 ** attempt), 5.0))
             continue
 
-        # estimate tokens_in using tiktoken for accurate audit logging
+        if result.error:
+            # Non-429 error (connection error, auth error, etc.)
+            # Rotate to the next key by recording a cooldown on this one
+            # so it won't be picked again immediately.
+            rotator.handle_429(
+                key_data["key_id"],
+                key_data["provider"],
+                result.rate_limit_headers,
+                subscriber_id=subscriber_id,
+                model=key_data.get("model", ""),
+            )
+            await asyncio.sleep(min(0.1 * (2 ** attempt), 2.0))
+            continue
+
         tokens_in = _estimate_tokens(messages)
 
         rotator.handle_success(
@@ -123,15 +134,19 @@ async def _stream_complete(
     capabilities: list[str] | None,
     messages: list[dict[str, Any]],
     subscriber_id: str,
+    min_context: int | None = None,
+    require_tools: bool | None = None,
+    require_vision: bool | None = None,
     **kwargs: Any,  # noqa: ANN401
 ) -> tuple[AsyncGenerator[dict[str, Any], None], dict[str, Any] | None]:
-    """Handle streaming completion — single attempt, no retry on 429."""
-    key_data = rotator.get_best_key(capabilities, subscriber_id=subscriber_id)
+    key_data = rotator.get_best_key(
+        capabilities, subscriber_id=subscriber_id,
+        min_context=min_context, require_tools=require_tools, require_vision=require_vision,
+    )
     if not key_data:
         return _error_generator("all_keys_exhausted", ""), None
 
     gen = await _call_complete(key_data, messages, stream=True, **kwargs)
-    # gen is AsyncGenerator here (stream=True)
     return gen, key_data  # type: ignore[return-value]
 
 
