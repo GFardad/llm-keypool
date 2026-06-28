@@ -5,6 +5,8 @@ import { PageHeader } from '@/components/page-header'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Activity, KeyRound, BarChart3, AlertTriangle, Loader2, Gauge, Timer, Zap, Shield, Globe, Server } from 'lucide-react'
+import { HelpNode } from '@/components/ui/help-node'
+import { HELP } from '@/lib/help-text'
 
 interface Overview {
   total_keys: number
@@ -145,7 +147,7 @@ export function AnalyticsPage() {
             <Card>
               <CardContent className="p-5">
                 <div className="flex items-center gap-2 text-muted-foreground text-xs mb-2">
-                  <KeyRound className="size-3.5" /> Total Keys
+                  <KeyRound className="size-3.5" /> Total Keys <HelpNode content={HELP.overviewKeys} side="top" />
                 </div>
                 <div className="text-3xl font-bold text-foreground">{overview?.total_keys ?? 0}</div>
               </CardContent>
@@ -153,7 +155,7 @@ export function AnalyticsPage() {
             <Card>
               <CardContent className="p-5">
                 <div className="flex items-center gap-2 text-muted-foreground text-xs mb-2">
-                  <Activity className="size-3.5" /> Active Keys
+                  <Activity className="size-3.5" /> Active Keys <HelpNode content={HELP.overviewKeys} side="top" />
                 </div>
                 <div className="text-3xl font-bold text-emerald-500">{overview?.active_keys ?? 0}</div>
               </CardContent>
@@ -161,7 +163,7 @@ export function AnalyticsPage() {
             <Card>
               <CardContent className="p-5">
                 <div className="flex items-center gap-2 text-muted-foreground text-xs mb-2">
-                  <BarChart3 className="size-3.5" /> Days Analyzed
+                  <BarChart3 className="size-3.5" /> Days Analyzed <HelpNode content={HELP.overviewKeys} side="top" />
                 </div>
                 <div className="text-3xl font-bold text-blue-500">{overview?.days_analyzed ?? 7}</div>
               </CardContent>
@@ -172,7 +174,7 @@ export function AnalyticsPage() {
           {stats && (
             <>
               <h2 className="text-sm font-medium flex items-center gap-2">
-                <Gauge className="size-4" /> Live Performance
+                <Gauge className="size-4" /> Live Performance <HelpNode content={HELP.overviewPerformance} side="top" />
               </h2>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <StatCard icon={<Zap className="size-3" />} label="Requests" value={stats.total_requests.toLocaleString()} color="text-foreground" />
@@ -191,7 +193,7 @@ export function AnalyticsPage() {
           {/* Provider breakdown */}
           {stats && Object.keys(stats.providers).length > 0 && (
             <div>
-              <h2 className="text-sm font-medium mb-3">Provider Traffic</h2>
+              <h2 className="text-sm font-medium mb-3">Provider Traffic <HelpNode content={HELP.providerTraffic} side="top" /></h2>
               <div className="rounded-lg border border-border overflow-hidden">
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
@@ -222,7 +224,7 @@ export function AnalyticsPage() {
           {/* Per-model latency */}
           {stats && Object.keys(stats.providers).length > 0 && (
             <div>
-              <h2 className="text-sm font-medium mb-3">Per-Model Latency</h2>
+              <h2 className="text-sm font-medium mb-3">Per-Model Latency <HelpNode content={HELP.modelLatency} side="top" /></h2>
               <div className="rounded-lg border border-border overflow-hidden">
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
@@ -259,7 +261,7 @@ export function AnalyticsPage() {
           {/* Penalties */}
           <div>
             <h2 className="text-sm font-medium mb-3 flex items-center gap-2">
-              <AlertTriangle className="size-4" /> Provider Penalties
+              <AlertTriangle className="size-4" /> Provider Penalties <HelpNode content={HELP.providerPenalties} side="top" />
             </h2>
             {penalties.length === 0 ? (
               <Card>
@@ -343,21 +345,21 @@ export function AnalyticsPage() {
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <Card>
               <CardContent className="p-4">
-                <div className="text-xs text-muted-foreground mb-1">OPEN (tripped)</div>
+                <div className="text-xs text-muted-foreground mb-1">OPEN (tripped) <HelpNode content={HELP.breakerStates} side="top" /></div>
                 <div className="text-xl font-bold text-red-500 tabular-nums">{openBreakers.length}</div>
                 <div className="text-[10px] text-muted-foreground">Auto-recover after 5 min</div>
               </CardContent>
             </Card>
             <Card>
               <CardContent className="p-4">
-                <div className="text-xs text-muted-foreground mb-1">HALF-OPEN (recovering)</div>
+                <div className="text-xs text-muted-foreground mb-1">HALF-OPEN (recovering) <HelpNode content={HELP.breakerStates} side="top" /></div>
                 <div className="text-xl font-bold text-amber-500 tabular-nums">{halfOpenBreakers.length}</div>
                 <div className="text-[10px] text-muted-foreground">3 successes to close</div>
               </CardContent>
             </Card>
             <Card>
               <CardContent className="p-4">
-                <div className="text-xs text-muted-foreground mb-1">CLOSED (healthy)</div>
+                <div className="text-xs text-muted-foreground mb-1">CLOSED (healthy) <HelpNode content={HELP.breakerStates} side="top" /></div>
                 <div className="text-xl font-bold text-emerald-500 tabular-nums">
                   {((breakers?.length ?? 0) - openBreakers.length - halfOpenBreakers.length).toLocaleString()}
                 </div>
