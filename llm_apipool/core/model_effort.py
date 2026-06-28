@@ -16,7 +16,7 @@ import logging
 import os
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import Any, TypedDict, NotRequired
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,16 @@ _cache: dict[str, dict[str, Any]] | None = None
 
 # Effort preset section
 # Each entry describes a configurable parameter for a provider/model.
-EffortParam = dict[str, Any]
+class EffortParam(TypedDict):
+    type: str
+    default: str | int | float | bool | None
+    values: NotRequired[list[str]]
+    label: NotRequired[str]
+    description: NotRequired[str]
+    min: NotRequired[int | float]
+    max: NotRequired[int | float]
+    depends_on: NotRequired[str]
+
 EffortPreset = dict[str, EffortParam | dict[str, EffortParam]]
 
 # Provider-level defaults and per-model overrides

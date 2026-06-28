@@ -144,7 +144,7 @@ class FallbackManager:
         messages: list[dict[str, Any]],
         subscriber_id: str,
     ) -> Any:
-        from ..providers.dispatch import _call_complete
+        from ..providers.dispatch import call_complete as _call_complete
 
         key_id = key["id"]
         # Patch the key's model to the target model for this attempt

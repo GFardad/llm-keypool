@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from typing import Any
 
 from ..key_store import KeyStore
 
 from ..config.loader import load_settings
+
+logger = logging.getLogger(__name__)
 
 _health_settings = load_settings().health
 CHECK_INTERVAL_MS = _health_settings.check_interval_ms
@@ -83,10 +86,10 @@ async def check_all_keys(store: KeyStore) -> None:
     keys = store.get_all_keys()
     enabled_keys = [k for k in keys if k.get("is_active")]
 
-    print(f"[Health] Checking {len(enabled_keys)} keys...")
+    logger.info("Checking %d keys...", len(enabled_keys))
     for key in enabled_keys:
         await check_key_health(store, key["id"])
-    print("[Health] Check complete.")
+    logger.info("Check complete.")
 
 
 async def _checker_loop(store: KeyStore) -> None:

@@ -12,14 +12,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 # ── Provider rule table ────────────────────────────────────────────────────────
 #   True  → all models from this provider are free-tier
 #   False → all models from this provider are paid (no free tier)
 #   callable(raw_model) → dynamic check based on the raw API response
 
-PROVIDER_RULES: dict[str, bool | Any] = {
+PROVIDER_RULES: dict[str, bool | Callable[[dict[str, Any]], bool]] = {
     # ── 100 % free tier ──────────────────────────────────────────────────────
     "groq": True,
     "cerebras": True,

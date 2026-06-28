@@ -6,6 +6,8 @@ from typing import Any
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from llm_apipool.core.utils import mask_key
+
 
 class _KeyUpdate(BaseModel):
     model: str | None = None
@@ -45,6 +47,9 @@ def _create_keys_router(
         keys = store.get_all_keys()
         if active_only:
             keys = [k for k in keys if k["is_active"]]
+        for key in keys:
+            if "api_key" in key:
+                key["api_key"] = mask_key(key["api_key"])
         return keys
 
     @router.post("/api/keys")
@@ -61,6 +66,8 @@ def _create_keys_router(
             reliability_score=data.reliability_score,
             group_name=data.group_name,
         )
+        if isinstance(result, dict) and "api_key" in result:
+            result["api_key"] = mask_key(result["api_key"])
         return result
 
     @router.patch("/api/keys/{key_id}")

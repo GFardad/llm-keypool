@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 from ..config.loader import load_settings
 
@@ -145,7 +145,7 @@ def set_custom_weights(weights: CustomWeights) -> None:
     set_custom_weights_obj(normalized)
 
 
-def weights_for(strategy: str) -> Optional[CustomWeights]:
+def weights_for(strategy: str) -> CustomWeights | None:
     """Get weights for a strategy."""
     if strategy == "priority":
         return None

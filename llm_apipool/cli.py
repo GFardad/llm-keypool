@@ -14,7 +14,7 @@ app = typer.Typer(help="LLM Apipool - Free-tier LLM gateway")
 @app.command()
 def proxy(
     port: int = typer.Option(8000, "--port", "-p", help="Port to run the server on"),
-    host: str = typer.Option("0.0.0.0", "--host", help="Host to bind to"),
+    host: str = typer.Option("127.0.0.1", "--host", help="Host to bind to"),
     reload: bool = typer.Option(
         False, "--reload", help="Enable hot reload for development"
     ),

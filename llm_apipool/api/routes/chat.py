@@ -35,12 +35,14 @@ from llm_apipool.core.affinity import (
     on_success as affinity_success,
     on_error as affinity_error,
 )
+from llm_apipool.core.fallback_modes import get_fallback_modes
 from llm_apipool.core.handoff import (
     get_handoff_mode,
     maybe_inject,
     record_incoming,
     record_successful,
 )
+from llm_apipool.core.slimey import get_slimey_router
 
 MAX_RETRIES = 20
 
@@ -120,7 +122,7 @@ def _compute_session_key(
                 )
             else:
                 text = str(content or "")
-            return hashlib.sha1(text.encode()).hexdigest()[:16]
+            return hashlib.sha256(text.encode()).hexdigest()[:16]
     return ""
 
 
@@ -232,6 +234,8 @@ def _create_chat_router(
                 min_context=min_context,
                 require_tools=require_tools,
                 require_vision=require_vision,
+                http_method="POST",
+                path="/v1/chat/completions",
                 **kwargs,
             )
             if key_data is None:
@@ -249,6 +253,23 @@ def _create_chat_router(
                 )
             )
             provider_used = key_data.get("provider", "unknown")
+
+            # Slimey — QoS tracking for streaming
+            _slimey_active = False
+            _slimey_start = 0.0
+            _slimey_tokens = 0
+            _slimey_first_chunk = True
+            if req.unicid and key_data:
+                sr = get_slimey_router()
+                if sr.is_enabled():
+                    _slimey_active = True
+                    sr.try_pin(
+                        req.unicid,
+                        key_data["provider"],
+                        key_data.get("model", ""),
+                        key_data["key_id"],
+                    )
+                    _slimey_start = time.monotonic()
 
             # Affinity — register request
             _affinity_registered = False
@@ -268,9 +289,37 @@ def _create_chat_router(
                 )
 
             async def _stream() -> AsyncGenerator[str, None]:
+                nonlocal _slimey_tokens, _slimey_first_chunk
                 async for chunk in gen:
+                    # Slimey — record TTFT on first chunk
+                    if _slimey_active and _slimey_first_chunk and req.unicid and key_data:
+                        _slimey_first_chunk = False
+                        ttft_ms = (time.monotonic() - _slimey_start) * 1000
+                        get_slimey_router().record_ttft(
+                            req.unicid,
+                            key_data["provider"],
+                            key_data.get("model", ""),
+                            ttft_ms,
+                        )
+                    # Slimey — track tokens for throughput
+                    if _slimey_active:
+                        usage = chunk.get("usage")
+                        if isinstance(usage, dict):
+                            ct = usage.get("completion_tokens", 0)
+                            if ct:
+                                _slimey_tokens = ct
+                        xt = chunk.get("x_tokens_used")
+                        if xt:
+                            _slimey_tokens = xt
+
                     x_err_mid = chunk.get("x_error")
                     if x_err_mid:
+                        if _slimey_active and req.unicid and key_data:
+                            get_slimey_router().record_error(
+                                req.unicid,
+                                key_data["provider"],
+                                key_data.get("model", ""),
+                            )
                         if _affinity_registered and req.unicid and key_data:
                             affinity_error(
                                 req.unicid,
@@ -283,6 +332,26 @@ def _create_chat_router(
                     _normalize_chunk(chunk, resp_id, created, model_used)
                     yield f"data: {json.dumps(chunk)}\n\n"
                 # Stream completed successfully
+                if _slimey_active and req.unicid and key_data:
+                    elapsed = time.monotonic() - _slimey_start
+                    if elapsed > 0 and _slimey_tokens > 0:
+                        tp = _slimey_tokens / elapsed
+                        get_slimey_router().record_throughput(
+                            req.unicid,
+                            key_data["provider"],
+                            key_data.get("model", ""),
+                            tp,
+                        )
+                        if not get_slimey_router().is_qos_acceptable(
+                            req.unicid,
+                            key_data["provider"],
+                            key_data.get("model", ""),
+                        ):
+                            get_slimey_router().record_error(
+                                req.unicid,
+                                key_data["provider"],
+                                key_data.get("model", ""),
+                            )
                 if _affinity_registered and req.unicid and key_data:
                     affinity_success(
                         req.unicid, key_data["key_id"], key_data.get("model", "")
@@ -300,6 +369,7 @@ def _create_chat_router(
                 },
             )
 
+        _t0 = time.monotonic()
         try:
             _msgs = _inject_handoff(session_key, req.messages, model_param)
             result, key_data = await dispatch_complete(
@@ -310,12 +380,51 @@ def _create_chat_router(
                 min_context=min_context,
                 require_tools=require_tools,
                 require_vision=require_vision,
+                http_method="POST",
+                path="/v1/chat/completions",
                 **kwargs,
             )
         except Exception as exc:
             return error_response(
                 502, f"{type(exc).__name__}: {str(exc)[:200]}", SERVER_ERROR
             )
+
+        # Slimey — record QoS for non-streaming
+        if req.unicid and key_data and not getattr(result, "error", None):
+            sr = get_slimey_router()
+            if sr.is_enabled():
+                sr.try_pin(
+                    req.unicid,
+                    key_data["provider"],
+                    key_data.get("model", ""),
+                    key_data["key_id"],
+                )
+                _elapsed = time.monotonic() - _t0
+                if _elapsed > 0:
+                    sr.record_ttft(
+                        req.unicid,
+                        key_data["provider"],
+                        key_data.get("model", ""),
+                        _elapsed * 1000,
+                    )
+                    if result.tokens_used > 0:
+                        tp = result.tokens_used / _elapsed
+                        sr.record_throughput(
+                            req.unicid,
+                            key_data["provider"],
+                            key_data.get("model", ""),
+                            tp,
+                        )
+                    if not sr.is_qos_acceptable(
+                        req.unicid,
+                        key_data["provider"],
+                        key_data.get("model", ""),
+                    ):
+                        sr.record_error(
+                            req.unicid,
+                            key_data["provider"],
+                            key_data.get("model", ""),
+                        )
 
         # Affinity — register on success, or error
         aff_registered = False
@@ -457,6 +566,8 @@ def _create_chat_router(
                     min_context=model_filter.context_min,
                     require_tools=model_filter.tools,
                     require_vision=model_filter.vision,
+                    http_method="POST",
+                    path="/v1/responses",
                 )
                 if result.text or getattr(result, "tool_calls", None):
                     last_result = result

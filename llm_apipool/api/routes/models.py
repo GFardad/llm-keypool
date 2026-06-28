@@ -257,17 +257,14 @@ def _create_models_router(
         usage_stats: dict[str, dict[str, float]] = {}
         try:
             cur = store._conn()
-            usage_rows = cur.execute("""
-                SELECT
-                    model_id,
-                    platform,
-                    COUNT(*) as total_reqs,
-                    SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as successes,
-                    AVG(CASE WHEN status = 'success' AND latency_ms > 0 THEN latency_ms ELSE NULL END) as avg_latency_ms
-                FROM requests
-                WHERE model_id IS NOT NULL AND model_id != ''
-                GROUP BY model_id, platform
-            """).fetchall()
+            usage_rows = cur.execute(
+                "SELECT model_id, platform, COUNT(*) as total_reqs, "
+                "SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as successes, "
+                "AVG(CASE WHEN status = 'success' AND latency_ms > 0 THEN latency_ms ELSE NULL END) as avg_latency_ms "
+                "FROM requests "
+                "WHERE model_id IS NOT NULL AND model_id != '' "
+                "GROUP BY model_id, platform"
+            ).fetchall()
             for r in usage_rows:
                 key = f"{r['platform']}:{r['model_id']}"
                 usage_stats[key] = {

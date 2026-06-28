@@ -5,18 +5,18 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Optional
+
 
 
 @dataclass
 class ModelFilter:
     """Filter criteria extracted from model string."""
 
-    context_min: Optional[int] = None
-    tools: Optional[bool] = None
-    vision: Optional[bool] = None
-    provider: Optional[str] = None
-    strategy: Optional[str] = None
+    context_min: int | None = None
+    tools: bool | None = None
+    vision: bool | None = None
+    provider: str | None = None
+    strategy: str | None = None
 
 
 class ModelParser:

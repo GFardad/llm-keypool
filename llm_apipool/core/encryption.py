@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 # ── Constants ────────────────────────────────────────────────────────────────
 PREFIX = "$AES256$"
 NONCE_BYTES = 12
+SALT_BYTES = 16
 KEY_FILE = Path.home() / ".llm-apipool" / "encryption.key"
 ENV_VAR = "LLM_APIPOOL_ENCRYPTION_KEY"
 
@@ -36,9 +37,17 @@ ENV_VAR = "LLM_APIPOOL_ENCRYPTION_KEY"
 # ── Key management ───────────────────────────────────────────────────────────
 
 
-def _derive_key(master: str) -> bytes:
-    """Derive a 32-byte AES key from the master secret using SHA-256 KDF."""
-    return hashlib.sha256(master.encode("utf-8")).digest()
+def _derive_key(master: str, salt: bytes | None = None) -> tuple[bytes, bytes]:
+    """Derive a 32-byte AES key using PBKDF2-HMAC-SHA256.
+
+    Returns ``(key, salt)`` where *salt* is either the one provided or a
+    freshly generated 16-byte random value.  The caller must store the salt
+    alongside the ciphertext when encrypting.
+    """
+    if salt is None:
+        salt = os.urandom(SALT_BYTES)
+    key = hashlib.pbkdf2_hmac("sha256", master.encode("utf-8"), salt, 600000)
+    return key, salt
 
 
 def get_encryption_key() -> str | None:
@@ -103,7 +112,7 @@ def encrypt(plaintext: str, provider: str = "", key: str | None = None) -> str:
     if not encryption_key:
         return plaintext
 
-    aes_key = _derive_key(encryption_key)
+    aes_key, salt = _derive_key(encryption_key)
     nonce = secrets.token_bytes(NONCE_BYTES)
 
     # Use PyCryptodome when available, pure-Python fallback otherwise
@@ -114,12 +123,12 @@ def encrypt(plaintext: str, provider: str = "", key: str | None = None) -> str:
         aad = provider.encode("utf-8")
         cipher.update(aad)
         ct, tag = cipher.encrypt_and_digest(plaintext.encode("utf-8"))
-        return PREFIX + (nonce + tag + ct).hex()
+        return PREFIX + (salt + nonce + tag + ct).hex()
     except ImportError:
         pass
 
     # Pure-Python fallback using hashlib-based stream cipher
-    return _encrypt_fallback(plaintext, aes_key, nonce, provider)
+    return _encrypt_fallback(plaintext, aes_key, nonce, provider, salt=salt)
 
 
 def decrypt(ciphertext: str, provider: str = "", key: str | None = None) -> str:
@@ -147,20 +156,22 @@ def decrypt(ciphertext: str, provider: str = "", key: str | None = None) -> str:
         logger.warning("Cannot decrypt — no encryption key configured")
         return ciphertext
 
-    aes_key = _derive_key(encryption_key)
     try:
         raw = bytes.fromhex(ciphertext[len(PREFIX) :])
     except ValueError:
         logger.error("Invalid ciphertext hex encoding")
         return ciphertext
 
-    if len(raw) < NONCE_BYTES + 16:
+    if len(raw) < SALT_BYTES + NONCE_BYTES + 16:
         logger.error("Ciphertext too short")
         return ciphertext
 
-    nonce = raw[:NONCE_BYTES]
-    tag = raw[NONCE_BYTES : NONCE_BYTES + 16]
-    ct = raw[NONCE_BYTES + 16 :]
+    salt = raw[:SALT_BYTES]
+    nonce = raw[SALT_BYTES : SALT_BYTES + NONCE_BYTES]
+    tag = raw[SALT_BYTES + NONCE_BYTES : SALT_BYTES + NONCE_BYTES + 16]
+    ct = raw[SALT_BYTES + NONCE_BYTES + 16 :]
+
+    aes_key, _ = _derive_key(encryption_key, salt=salt)
 
     try:
         from Crypto.Cipher import AES
@@ -173,13 +184,15 @@ def decrypt(ciphertext: str, provider: str = "", key: str | None = None) -> str:
     except ImportError:
         pass
 
-    return _decrypt_fallback(ciphertext, aes_key, nonce, tag, ct, provider)
+    return _decrypt_fallback(ciphertext, aes_key, nonce, tag, ct, provider, salt=salt)
 
 
 # ── Pure-Python fallback (no PyCryptodome) ───────────────────────────────────
 
 
-def _encrypt_fallback(plaintext: str, key: bytes, nonce: bytes, provider: str) -> str:
+def _encrypt_fallback(
+    plaintext: str, key: bytes, nonce: bytes, provider: str, salt: bytes = b""
+) -> str:
     """Encrypt using HMAC-SHA256 stream (deterministic, slower)."""
     # Derive a per-nonce encryption key via HMAC
     enc_key = hmac.new(key, nonce, "sha256").digest()
@@ -193,7 +206,7 @@ def _encrypt_fallback(plaintext: str, key: bytes, nonce: bytes, provider: str) -
     )[: len(plaintext)]
     # Prepend a fake tag (16 bytes of zero, since pure-Python can't verify)
     fake_tag = b"\x00" * 16
-    return PREFIX + (nonce + fake_tag + ciphertext_bytes).hex()
+    return PREFIX + (salt + nonce + fake_tag + ciphertext_bytes).hex()
 
 
 def _decrypt_fallback(
@@ -203,8 +216,10 @@ def _decrypt_fallback(
     tag: bytes,
     ct: bytes,
     provider: str,
+    salt: bytes = b"",
 ) -> str:
-    """Decrypt using HMAC-SHA256 stream."""
+    """Decrypt using HMAC-SHA256 stream (salt is included in ciphertext but
+    the key has already been derived from it before this call)."""
     enc_key = hmac.new(key, nonce, "sha256").digest()
     aad_material = hmac.new(enc_key, provider.encode(), "sha256").digest()
     plaintext_bytes = bytes(

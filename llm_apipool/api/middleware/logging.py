@@ -9,9 +9,11 @@ and subscriber id when available.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import time
+import uuid
 from typing import Any
 
 from fastapi import Request, Response
@@ -42,7 +44,7 @@ class ComprehensiveLoggingMiddleware(BaseHTTPMiddleware):
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
         start = time.monotonic()
-        req_id = id(request)
+        req_id = uuid.uuid4().hex[:12]
 
         # ── Capture request body (re-readable via request.state) ──────
         body_bytes = await request.body()
@@ -68,6 +70,10 @@ class ComprehensiveLoggingMiddleware(BaseHTTPMiddleware):
                     resp_body = raw.decode("utf-8", errors="replace")
             except Exception:
                 pass
+
+        # ── Redact sensitive headers before logging ────────────────────
+        if "authorization" in headers:
+            headers["authorization"] = "***"
 
         # ── Log to structured file ────────────────────────────────────
         method = request.method
@@ -134,6 +140,27 @@ def _log_path() -> Any:
     return _get_log_dir() / f"access-{d}.jsonl"
 
 
+def _cleanup_old_logs() -> None:
+    """Remove access log files older than 7 days."""
+    from datetime import date, timedelta
+
+    cutoff_date = date.today() - timedelta(days=7)
+    log_dir = _get_log_dir()
+    for log_file in log_dir.glob("access-*.jsonl"):
+        # Extract date from filename: access-YYYY-MM-DD.jsonl
+        stem = log_file.stem
+        if stem.startswith("access-"):
+            date_str = stem[7:]
+            try:
+                parts = date_str.split("-")
+                if len(parts) >= 3:
+                    file_date = date(int(parts[0]), int(parts[1]), int(parts[2]))
+                    if file_date < cutoff_date:
+                        log_file.unlink()
+            except (ValueError, IndexError):
+                pass
+
+
 def _write_entry(entry: dict[str, Any]) -> None:
     """Thread-safe append to the daily access log."""
     path = _log_path()
@@ -142,6 +169,16 @@ def _write_entry(entry: dict[str, Any]) -> None:
             f.write(json.dumps(entry, default=str, ensure_ascii=False) + "\n")
     except OSError:
         pass  # best-effort logging
+    # Probabilistic cleanup: ~1/1000 writes triggers cleanup
+    try:
+        from datetime import date as _dt_date
+
+        today_str = _dt_date.today().isoformat()
+        hash_val = int(hashlib.sha256(today_str.encode()).hexdigest(), 16)
+        if hash_val % 1000 == 0:
+            _cleanup_old_logs()
+    except Exception:
+        pass  # best-effort cleanup
 
 
 def add_logging_middleware(app: Any) -> None:

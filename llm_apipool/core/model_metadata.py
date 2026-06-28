@@ -102,6 +102,7 @@ def refresh_from_db(store: Any = None, db_path: str | None = None) -> int:
             else str(new_db)
         )
 
+    conn = None
     try:
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
@@ -121,10 +122,12 @@ def refresh_from_db(store: Any = None, db_path: str | None = None) -> int:
                 "stt": bool(row["supports_stt"]),
                 "platform": row["platform"] or "",
             }
-        conn.close()
         return len(rows)
     except Exception:
         return 0
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def filter_models(

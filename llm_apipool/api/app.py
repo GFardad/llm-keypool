@@ -11,7 +11,11 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 
+from llm_apipool.api.middleware.auth import add_proxy_auth_middleware
+from llm_apipool.api.middleware.logging import add_logging_middleware
+from llm_apipool.api.middleware.security import add_security_headers_middleware
 from llm_apipool.api.routes.analytics import _create_analytics_router
 from llm_apipool.api.routes.anthropic import _create_anthropic_router
 
@@ -21,6 +25,7 @@ from llm_apipool.api.routes.embeddings import _create_embeddings_router
 from llm_apipool.api.routes.freemodels import _create_freemodels_router
 from llm_apipool.api.routes.health import _create_health_router
 from llm_apipool.api.routes.keys import _create_keys_router
+from llm_apipool.api.routes.logs import _create_logs_router
 from llm_apipool.api.routes.media import _create_media_router
 from llm_apipool.api.routes.models import _create_models_router
 from llm_apipool.api.routes.settings import _create_settings_router
@@ -28,6 +33,7 @@ from llm_apipool.api.routes.bulk_import import _create_bulk_import_router
 from llm_apipool.api.routes.tiers import _create_tiers_router
 from llm_apipool.core.health_check import HealthCheckService
 from llm_apipool.core.model_sync_service import ModelSyncService
+from llm_apipool.core.ratelimiter import add_rate_limit_middleware
 from llm_apipool.key_store import KeyStore
 from llm_apipool.rotator import Rotator
 
@@ -147,6 +153,7 @@ def make_app(
     )
     app.include_router(_create_health_router(store))
     app.include_router(_create_keys_router(store, configs, rotator))
+    app.include_router(_create_logs_router(store))
     app.include_router(_create_analytics_router(store))
     app.include_router(_create_settings_router(store, rotator))
     app.include_router(_create_tiers_router())
@@ -219,6 +226,21 @@ def make_app(
                 "version": "2.1",
                 "note": "Frontend not built — run `cd frontend && npm run build`",
             }
+
+    # ── Middleware ─────────────────────────────────────────────────────────
+    # CORS — allow all origins for dashboard access
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    add_security_headers_middleware(app)
+    add_proxy_auth_middleware(app)
+    add_rate_limit_middleware(app, rate=10.0, burst=20)
+    add_logging_middleware(app)
 
     return app
 

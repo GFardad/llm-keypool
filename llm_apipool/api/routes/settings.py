@@ -70,6 +70,26 @@ class _RoutingOverrideClearRequest(BaseModel):
     pass
 
 
+class _FallbackModeActiveRequest(BaseModel):
+    active_mode: str | None = None
+
+
+class _FallbackModeConfigRequest(BaseModel):
+    enabled: bool | None = None
+    quality_tier: int | None = None
+    max_fallback_tier: int | None = None
+    tier_fallback_enabled: bool | None = None
+    strategy: str | None = None
+    affinity_enabled: bool | None = None
+    sticky_enabled: bool | None = None
+    max_attempts_same_key: int | None = None
+    max_attempts_same_provider: int | None = None
+    max_attempts_all_providers: int | None = None
+    cooldown_on_failure_ms: int | None = None
+    max_ttft_ms: int | None = None
+    min_throughput: int | None = None
+
+
 class _SaveAllRequest(BaseModel):
     strategy: str | None = None
     custom_weights: dict[str, float] | None = None
@@ -83,6 +103,11 @@ class _SaveAllRequest(BaseModel):
     affinity_enabled: bool | None = None
     fallback: dict[str, int] | None = None
     forced_models: list[str] | None = None
+    logging_enabled: bool | None = None
+    log_retention_days: int | None = None
+    log_max_size_mb: int | None = None
+    fallback_active_mode: str | None = None
+    fallback_mode_configs: dict[str, dict] | None = None
 
 
 def _create_settings_router(store: Any = None, rotator: Any = None) -> APIRouter:
@@ -284,6 +309,100 @@ def _create_settings_router(store: Any = None, rotator: Any = None) -> APIRouter
         r.clear_forced_models()
         return {"success": True}
 
+    # ── Fallback modes ───────────────────────────────────────────────────
+
+    @router.get("/api/settings/fallback-modes")
+    async def get_fallback_modes_endpoint() -> dict[str, Any]:
+        from llm_apipool.core.fallback_modes import get_fallback_modes
+
+        fm = get_fallback_modes()
+        return fm.to_dict()
+
+    @router.get("/api/settings/fallback-modes/{mode}/config")
+    async def get_fallback_mode_config(mode: str) -> dict[str, Any]:
+        from llm_apipool.core.fallback_modes import get_fallback_modes
+
+        fm = get_fallback_modes()
+        try:
+            cfg = fm.get_mode_config(mode)
+        except KeyError:
+            from llm_apipool.api.errors import INVALID_REQUEST_ERROR, error_response
+
+            return error_response(400, f"Invalid mode: {mode}", INVALID_REQUEST_ERROR)
+        return {"mode": mode, "config": vars(cfg)}
+
+    @router.put("/api/settings/fallback-modes/active")
+    async def set_fallback_mode_active(
+        req: _FallbackModeActiveRequest,
+    ) -> dict[str, Any]:
+        from llm_apipool.core.fallback_modes import get_fallback_modes
+
+        if req.active_mode is not None:
+            fm = get_fallback_modes()
+            try:
+                fm.set_active_mode(req.active_mode)
+            except ValueError as e:
+                from llm_apipool.api.errors import INVALID_REQUEST_ERROR, error_response
+
+                return error_response(400, str(e), INVALID_REQUEST_ERROR)
+            # Sync slimey router enabled state with mode
+            from llm_apipool.core.slimey import get_slimey_router
+
+            sr = get_slimey_router()
+            sr.set_enabled(req.active_mode == "slimey")
+        return {"success": True}
+
+    @router.put("/api/settings/fallback-modes/{mode}")
+    async def set_fallback_mode_config(
+        mode: str, req: _FallbackModeConfigRequest
+    ) -> dict[str, Any]:
+        from llm_apipool.core.fallback_modes import get_fallback_modes
+
+        fm = get_fallback_modes()
+        try:
+            fm.get_mode_config(mode)  # validate mode exists
+        except KeyError:
+            from llm_apipool.api.errors import INVALID_REQUEST_ERROR, error_response
+
+            return error_response(400, f"Invalid mode: {mode}", INVALID_REQUEST_ERROR)
+
+        updates: dict[str, Any] = {}
+        for field in (
+            "enabled",
+            "quality_tier",
+            "max_fallback_tier",
+            "tier_fallback_enabled",
+            "strategy",
+            "affinity_enabled",
+            "sticky_enabled",
+            "max_attempts_same_key",
+            "max_attempts_same_provider",
+            "max_attempts_all_providers",
+            "cooldown_on_failure_ms",
+            "max_ttft_ms",
+            "min_throughput",
+        ):
+            val = getattr(req, field, None)
+            if val is not None:
+                updates[field] = val
+
+        fm.update_mode_config(mode, **updates)
+
+        # Apply slimey config to the global slimey router
+        if mode == "slimey":
+            from llm_apipool.core.slimey import get_slimey_router
+
+            sr = get_slimey_router()
+            if updates.get("max_ttft_ms") or updates.get("min_throughput"):
+                sr.set_qos_config(
+                    updates.get("max_ttft_ms", sr.get_qos_config()["max_ttft_ms"]),
+                    updates.get("min_throughput", sr.get_qos_config()["min_throughput"]),
+                )
+            if updates.get("enabled") is not None:
+                sr.set_enabled(updates["enabled"])
+
+        return {"success": True}
+
     @router.post("/api/settings/save-all")
     async def save_all_settings(req: _SaveAllRequest) -> dict[str, Any]:
         r = _get_rotator()
@@ -383,6 +502,40 @@ def _create_settings_router(store: Any = None, rotator: Any = None) -> APIRouter
                     except (ValueError, TypeError) as e:
                         errors.append(f"fallback.{k}: {e}")
 
+        if req.fallback_active_mode is not None:
+            from llm_apipool.core.fallback_modes import get_fallback_modes
+
+            try:
+                get_fallback_modes().set_active_mode(req.fallback_active_mode)
+            except ValueError as e:
+                errors.append(f"fallback_active_mode: {e}")
+
+        if req.fallback_mode_configs is not None:
+            from llm_apipool.core.fallback_modes import get_fallback_modes
+
+            fm = get_fallback_modes()
+            for mode, cfg in req.fallback_mode_configs.items():
+                try:
+                    fm.update_mode_config(mode, **cfg)
+                except KeyError:
+                    errors.append(f"fallback_mode_configs.{mode}: invalid mode")
+                except Exception as e:
+                    errors.append(f"fallback_mode_configs.{mode}: {e}")
+
+            # Apply slimey config to global slimey router
+            slimey_cfg = req.fallback_mode_configs.get("slimey", {})
+            if slimey_cfg:
+                from llm_apipool.core.slimey import get_slimey_router
+
+                sr = get_slimey_router()
+                if "max_ttft_ms" in slimey_cfg or "min_throughput" in slimey_cfg:
+                    sr.set_qos_config(
+                        slimey_cfg.get("max_ttft_ms", sr.get_qos_config()["max_ttft_ms"]),
+                        slimey_cfg.get("min_throughput", sr.get_qos_config()["min_throughput"]),
+                    )
+                if slimey_cfg.get("enabled") is not None:
+                    sr.set_enabled(slimey_cfg["enabled"])
+
         # Persist all provided values to DB
         if store is not None:
             mapping = {
@@ -398,6 +551,9 @@ def _create_settings_router(store: Any = None, rotator: Any = None) -> APIRouter
                 "affinity_enabled": req.affinity_enabled,
                 "fallback": req.fallback,
                 "forced_models": req.forced_models,
+                "logging_enabled": req.logging_enabled,
+                "log_retention_days": req.log_retention_days,
+                "log_max_size_mb": req.log_max_size_mb,
             }
             for sk, sv in mapping.items():
                 if sv is not None:
@@ -490,6 +646,45 @@ def restore_settings_from_db(store: Any, rotator: Any) -> None:
         val = settings.get("fallback")
         if val is not None and isinstance(val, dict):
             _load_fallback_defaults().update(val)
+    except Exception:
+        pass
+
+    try:
+        val = settings.get("fallback_active_mode")
+        if val is not None:
+            from llm_apipool.core.fallback_modes import get_fallback_modes
+
+            get_fallback_modes().set_active_mode(str(val))
+    except Exception:
+        pass
+
+    try:
+        val = settings.get("fallback_mode_configs")
+        if val is not None and isinstance(val, dict):
+            from llm_apipool.core.fallback_modes import get_fallback_modes
+
+            fm = get_fallback_modes()
+            for mode, cfg in val.items():
+                if isinstance(cfg, dict):
+                    fm.update_mode_config(mode, **cfg)
+            # Apply slimey config
+            slimey_cfg = val.get("slimey", {})
+            if isinstance(slimey_cfg, dict):
+                from llm_apipool.core.slimey import get_slimey_router
+
+                sr = get_slimey_router()
+                if "max_ttft_ms" in slimey_cfg or "min_throughput" in slimey_cfg:
+                    sr.set_qos_config(
+                        slimey_cfg.get(
+                            "max_ttft_ms", sr.get_qos_config()["max_ttft_ms"]
+                        ),
+                        slimey_cfg.get(
+                            "min_throughput",
+                            sr.get_qos_config()["min_throughput"],
+                        ),
+                    )
+                if slimey_cfg.get("enabled") is not None:
+                    sr.set_enabled(slimey_cfg["enabled"])
     except Exception:
         pass
 
